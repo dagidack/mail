@@ -20,22 +20,6 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "").replace(" ", "")
 SENDER_NAME = os.getenv("SENDER_NAME", "Renas Media")
 
-SUBJECT_TEMPLATE = os.getenv(
-    "SUBJECT_TEMPLATE", "Video content for {Company_Name}"
-)
-
-HTML_TEMPLATE = """\
-<html>
-  <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.5; font-size: 14px;">
-    <p>Hi {Name},</p>
-    <p>I noticed the great work <b>{Company_Name}</b> is doing, and I wanted to reach out.</p>
-    <p>I'm with Renas Media, a digital production team based in Finland.</p>
-    <br>
-    <p>Best regards,<br><b>Maria V.</b></p>
-  </body>
-</html>
-"""
-
 VIMEO_URL = os.getenv("VIMEO_URL", "https://vimeo.com/renasmedia")
 DELAY_MIN = float(os.getenv("DELAY_MIN_SECONDS", "10"))
 DELAY_MAX = float(os.getenv("DELAY_MAX_SECONDS", "20"))
@@ -109,9 +93,6 @@ def validate_config() -> list[str]:
 def random_delay() -> float:
     return random.uniform(DELAY_MIN, DELAY_MAX)
 
-def get_default_templates() -> dict[str, str]:
-    return {"subject_template": SUBJECT_TEMPLATE, "html_template": HTML_TEMPLATE}
-
 def apply_placeholders(template: str, receiver: dict, vimeo_url: str = VIMEO_URL) -> str:
     return (
         template.replace("{Name}", receiver.get("Name", ""))
@@ -128,34 +109,6 @@ def send_email(receiver: dict, server: smtplib.SMTP, subject_template: str, html
     msg.attach(MIMEText(body, "html"))
     server.send_message(msg)
 
-def save_results_csv(receivers: list[dict], summary: dict, output_filename: str) -> None:
-    """Генерирует итоговый файл с отметками sent/failed"""
-    if not receivers:
-        return
-        
-    fieldnames = list(receivers[0].get("_original_row", {}).keys())
-    if not fieldnames:
-        return
-        
-    if "Status" not in fieldnames:
-        fieldnames.append("Status")
-    if "Error" not in fieldnames:
-        fieldnames.append("Error")
-
-    with open(output_filename, 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for i, rec in enumerate(receivers):
-            row_out = dict(rec.get("_original_row", {}))
-            if i < len(summary["results"]):
-                res = summary["results"][i]
-                row_out["Status"] = res.get("status", "skipped")
-                row_out["Error"] = res.get("error", "")
-            else:
-                row_out["Status"] = "skipped"
-                row_out["Error"] = ""
-            writer.writerow(row_out)
-
 StatusCallback = Callable[[dict], None]
 
 def run_campaign(
@@ -164,7 +117,6 @@ def run_campaign(
     should_stop: Optional[Callable[[], bool]] = None,
     subject_template: Optional[str] = None,
     html_template: Optional[str] = None,
-    output_filename: Optional[str] = None, # Новый параметр для файла
 ) -> dict:
     
     summary = {"total": len(receivers), "sent": 0, "failed": 0, "results": [], "stopped": False}
@@ -172,8 +124,8 @@ def run_campaign(
     def emit(event: dict) -> None:
         if on_status: on_status(event)
 
-    subject_tpl = subject_template or SUBJECT_TEMPLATE
-    html_tpl = html_template or HTML_TEMPLATE
+    subject_tpl = subject_template or ""
+    html_tpl = html_template or ""
 
     config_errors = validate_config()
     if config_errors:
@@ -225,25 +177,14 @@ def run_campaign(
             if summary["stopped"]:
                 break
 
-    # === СОХРАНЯЕМ ИТОГОВЫЙ CSV ФАЙЛ ===
-    if output_filename:
-        try:
-            save_results_csv(receivers, summary, output_filename)
-            msg_suffix = f" (Results saved to: {output_filename})"
-        except Exception as e:
-            msg_suffix = f" (Failed to save CSV: {e})"
-    else:
-        msg_suffix = ""
-
     try:
         server.quit()
     except Exception:
         pass
 
     if not summary["stopped"]:
-        emit({"type": "done", "message": f"Campaign complete.{msg_suffix}", "sent": summary["sent"], "failed": summary["failed"]})
+        emit({"type": "done", "message": "Campaign complete.", "sent": summary["sent"], "failed": summary["failed"]})
     else:
-        if output_filename:
-            emit({"type": "info", "message": f"Partial results saved to: {output_filename}"})
+        emit({"type": "info", "message": "Send stopped."})
 
     return summary

@@ -1,5 +1,6 @@
 """Web UI for CSV-based email campaigns — runs on your local network."""
 
+import logging
 import threading
 import uuid
 from collections import deque
@@ -9,10 +10,7 @@ from flask import Flask, jsonify, render_template, request
 from email_sender import (
     DELAY_MAX,
     DELAY_MIN,
-    HTML_TEMPLATE,
     SENDER_EMAIL,
-    SUBJECT_TEMPLATE,
-    get_default_templates,
     parse_csv,
     run_campaign,
     validate_config,
@@ -30,7 +28,6 @@ _stop_flags: dict[str, bool] = {}
 def _create_job(receivers: list[dict], parse_errors: list[str], filename: str) -> str:
     job_id = str(uuid.uuid4())
     with _lock:
-        defaults = get_default_templates()
         _jobs[job_id] = {
             "id": job_id,
             "filename": filename,
@@ -39,8 +36,6 @@ def _create_job(receivers: list[dict], parse_errors: list[str], filename: str) -
             "parse_errors": parse_errors,
             "events": deque(maxlen=500),
             "summary": None,
-            "subject_template": defaults["subject_template"],
-            "html_template": defaults["html_template"],
         }
         _stop_flags[job_id] = False
     return job_id
@@ -71,8 +66,6 @@ def index():
         delay_max=DELAY_MAX,
         config_ok=len(config_errors) == 0,
         config_errors=config_errors,
-        default_subject=SUBJECT_TEMPLATE,
-        default_html=HTML_TEMPLATE,
     )
 
 
@@ -116,36 +109,13 @@ def upload():
     })
 
 
-@app.route("/api/templates/<job_id>", methods=["GET", "POST"])
-def templates(job_id: str):
-    with _lock:
-        job = _jobs.get(job_id)
-        if not job:
-            return jsonify({"error": "Job not found."}), 404
-
-        if request.method == "GET":
-            return jsonify({
-                "subject_template": job["subject_template"],
-                "html_template": job["html_template"],
-            })
-
-        data = request.get_json(silent=True) or {}
-        subject = data.get("subject_template")
-        html = data.get("html_template")
-        if not subject or not html:
-            return jsonify({"error": "Subject and body are required."}), 400
-        job["subject_template"] = subject
-        job["html_template"] = html
-        return jsonify({"ok": True})
-
-
 @app.route("/api/send/<job_id>", methods=["POST"])
 def send(job_id: str):
     global _active_job_id
 
     data = request.get_json(silent=True) or {}
-    subject_override = data.get("subject_template")
-    html_override = data.get("html_template")
+    subject_template = data.get("subject_template", "") or ""
+    html_template = data.get("html_template", "") or ""
 
     with _lock:
         if _active_job_id and _active_job_id != job_id:
@@ -164,12 +134,6 @@ def send(job_id: str):
         _stop_flags[job_id] = False
         job["status"] = "running"
         job["events"].clear()
-        if subject_override:
-            job["subject_template"] = subject_override
-        if html_override:
-            job["html_template"] = html_override
-        subject_template = job["subject_template"]
-        html_template = job["html_template"]
 
     receivers = job["receivers"]
 
@@ -181,7 +145,6 @@ def send(job_id: str):
             should_stop=lambda: _stop_flags.get(job_id, False),
             subject_template=subject_template,
             html_template=html_template,
-            original_filename=job.get("filename", "recipients.csv")
         )
         with _lock:
             job = _jobs.get(job_id)
@@ -222,6 +185,10 @@ def main() -> None:
     print("    http://localhost:5050")
     print("    http://<your-local-ip>:5050  (other devices on same network)")
     print("  ─────────────────────────\n")
+
+    werkzeug_logger = logging.getLogger("werkzeug")
+    werkzeug_logger.setLevel(logging.ERROR)
+
     app.run(host="0.0.0.0", port=5050, debug=False, threaded=True)
 
 
